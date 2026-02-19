@@ -15,6 +15,7 @@ const KING_COIN_KEY = 'coin-king';
 const SUPER_KING_COIN_KEY = 'coin-super-king';
 const MAGNET_ITEM_KEY = 'item-magnet';
 const AUTO_ITEM_KEY = 'item-auto';
+const RAIN_SOUND_KEY = 'rain-sfx';
 
 // Assumption based on your note: 5x5 sheet where each frame is 256x256.
 // If your full image is 256x256 total, change these to match actual frame size.
@@ -88,7 +89,9 @@ const RAIN_MAX_ON_MS = 10500;
 const RAIN_MIN_OFF_MS = 6000;
 const RAIN_MAX_OFF_MS = 15000;
 const RAIN_DROP_COUNT = 140;
+const RAIN_SFX_VOLUME = 0.18;
 const FPS_UPDATE_INTERVAL_MS = 150;
+const RUN_TIMER_UPDATE_INTERVAL_MS = 200;
 const AVATAR_CONFIGS: Record<string, { runSheet: string; idleSheet: string }> = {
   batcop: {
     runSheet: BATCOP_RUN_KEY,
@@ -201,6 +204,7 @@ export class RunningMainScene extends Phaser.Scene {
   rainHeight = 0;
   rainGraphics: Phaser.GameObjects.Graphics | null = null;
   rainToggleTimer: Phaser.Time.TimerEvent | null = null;
+  rainLoopSound: Phaser.Sound.BaseSound | null = null;
   rainDrops: RainDrop[] = [];
 
   cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
@@ -218,6 +222,8 @@ export class RunningMainScene extends Phaser.Scene {
   nextExternalUiEmitAt = 0;
   gamePaused = false;
   nextFpsUpdateAt = 0;
+  nextRunTimerUpdateAt = 0;
+  runElapsedMs = 0;
   uiHealthGaugeHeight = 220;
 
   uiFill: Phaser.GameObjects.Graphics | null = null;
@@ -235,7 +241,12 @@ export class RunningMainScene extends Phaser.Scene {
   uiShoutGoButton: Phaser.GameObjects.Container | null = null;
   uiShoutFightButton: Phaser.GameObjects.Container | null = null;
   uiPauseButton: Phaser.GameObjects.Container | null = null;
+  uiBgmToggleButton: Phaser.GameObjects.Container | null = null;
+  uiSfxToggleButton: Phaser.GameObjects.Container | null = null;
   uiFpsText: Phaser.GameObjects.Text | null = null;
+  uiRunTimerText: Phaser.GameObjects.Text | null = null;
+  backgroundAudioEnabled = true;
+  sfxEnabled = true;
 
   constructor() {
     super('RunningMainScene');
@@ -243,6 +254,7 @@ export class RunningMainScene extends Phaser.Scene {
 
   preload(): void {
     this.load.image(BG_LOOP_KEY, '/assets/1.webp');
+    this.load.audio(RAIN_SOUND_KEY, '/assets/sound/rain.mp3');
 
     this.load.spritesheet(BATCOP_RUN_KEY, '/assets/characters/batcop-run-v1.png', {
       frameWidth: FRAME_WIDTH,
@@ -384,7 +396,10 @@ export class RunningMainScene extends Phaser.Scene {
     this.createGameUi();
     this.createShoutCanvasButtons();
     this.createPauseCanvasButton();
+    this.createAudioToggleButtons();
     this.createFpsOverlay();
+    this.createRunTimerOverlay();
+    this.runElapsedMs = 0;
     this.nextExternalUiEmitAt = 0;
     this.emitExternalUiState(true);
     this.handleResize(this.scale.gameSize);
@@ -436,6 +451,8 @@ export class RunningMainScene extends Phaser.Scene {
     this.updateLoopBackground(scrollInputSpeed * BG_SCROLL_FACTOR * dt);
     this.updateRainOverlay(dt);
     this.updateFpsOverlay();
+    this.runElapsedMs += delta;
+    this.updateRunTimerOverlay();
     this.updateCoins(scrollInputSpeed);
     this.updateActiveItemsUi();
     if (Phaser.Input.Keyboard.JustDown(this.rechargeKey)) {
@@ -1182,6 +1199,9 @@ export class RunningMainScene extends Phaser.Scene {
   }
 
   playCoinCollectSound(): void {
+    if (!this.sfxEnabled) {
+      return;
+    }
     const ctx = this.getAudioContext();
     if (!ctx) {
       return;
@@ -1222,6 +1242,9 @@ export class RunningMainScene extends Phaser.Scene {
   }
 
   playKingCoinCollectSound(): void {
+    if (!this.sfxEnabled) {
+      return;
+    }
     const ctx = this.getAudioContext();
     if (!ctx) {
       return;
@@ -1267,6 +1290,9 @@ export class RunningMainScene extends Phaser.Scene {
   }
 
   playSuperKingCoinCollectSound(): void {
+    if (!this.sfxEnabled) {
+      return;
+    }
     const ctx = this.getAudioContext();
     if (!ctx) {
       return;
@@ -1297,6 +1323,9 @@ export class RunningMainScene extends Phaser.Scene {
   }
 
   playMilestoneSound(): void {
+    if (!this.sfxEnabled) {
+      return;
+    }
     const ctx = this.getAudioContext();
     if (!ctx) {
       return;
@@ -1327,6 +1356,9 @@ export class RunningMainScene extends Phaser.Scene {
   }
 
   playMagnetItemSound(): void {
+    if (!this.sfxEnabled) {
+      return;
+    }
     const ctx = this.getAudioContext();
     if (!ctx) {
       return;
@@ -1352,6 +1384,9 @@ export class RunningMainScene extends Phaser.Scene {
   }
 
   playAutoItemSound(): void {
+    if (!this.sfxEnabled) {
+      return;
+    }
     const ctx = this.getAudioContext();
     if (!ctx) {
       return;
@@ -1742,7 +1777,9 @@ export class RunningMainScene extends Phaser.Scene {
     }
 
     this.layoutShoutCanvasButtons(width, height);
+    this.layoutAudioToggleButtons();
     this.layoutFpsOverlay(width);
+    this.layoutRunTimerOverlay(width, height);
     this.updateRainBounds(width, height);
     this.layoutGameUi(width, height);
   }
@@ -1820,6 +1857,9 @@ export class RunningMainScene extends Phaser.Scene {
   }
 
   playFootstepSound(speedRatio = 1): void {
+    if (!this.sfxEnabled) {
+      return;
+    }
     this.audioSystem?.playFootstepSound(speedRatio);
   }
 
@@ -1843,6 +1883,14 @@ export class RunningMainScene extends Phaser.Scene {
     }
     this.rainingNow = true;
     this.rainToggleTimer = null;
+    if (this.cache.audio.exists(RAIN_SOUND_KEY)) {
+      this.rainLoopSound = this.sound.add(RAIN_SOUND_KEY, {
+        loop: true,
+        volume: RAIN_SFX_VOLUME
+      });
+    } else {
+      this.rainLoopSound = null;
+    }
     this.setRainEmitting(true);
     this.scheduleNextRainToggle();
     this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.teardownRainCycle());
@@ -1887,6 +1935,11 @@ export class RunningMainScene extends Phaser.Scene {
       this.rainGraphics.destroy();
       this.rainGraphics = null;
     }
+    if (this.rainLoopSound) {
+      this.rainLoopSound.stop();
+      this.rainLoopSound.destroy();
+      this.rainLoopSound = null;
+    }
     this.rainDrops = [];
   }
 
@@ -1909,6 +1962,24 @@ export class RunningMainScene extends Phaser.Scene {
 
   setRainEmitting(enabled: boolean): void {
     this.rainEmitting = Boolean(enabled);
+    if (!this.rainLoopSound) {
+      return;
+    }
+    if (!this.backgroundAudioEnabled || this.gamePaused) {
+      if (this.rainLoopSound.isPlaying) {
+        this.rainLoopSound.pause();
+      }
+      return;
+    }
+    if (this.rainEmitting) {
+      if (this.rainLoopSound.isPaused) {
+        this.rainLoopSound.resume();
+      } else if (!this.rainLoopSound.isPlaying) {
+        this.rainLoopSound.play();
+      }
+    } else if (this.rainLoopSound.isPlaying) {
+      this.rainLoopSound.pause();
+    }
   }
 
   updateRainOverlay(dt: number): void {
@@ -2155,6 +2226,29 @@ export class RunningMainScene extends Phaser.Scene {
     this.layoutShoutCanvasButtons(this.scale.width, this.scale.height);
   }
 
+  createAudioToggleButtons(): void {
+    this.uiBgmToggleButton = this.createCanvasShoutButton('BGM ON', () => {
+      this.setBackgroundAudioEnabled(!this.backgroundAudioEnabled);
+    }, {
+      width: 112,
+      fill: 0x1f355e,
+      stroke: 0x9fc7ff,
+      textColor: '#e8f2ff',
+      activeFill: 0x172b4e
+    });
+    this.uiSfxToggleButton = this.createCanvasShoutButton('SFX ON', () => {
+      this.setSfxEnabled(!this.sfxEnabled);
+    }, {
+      width: 112,
+      fill: 0x3d2b63,
+      stroke: 0xbda6ff,
+      textColor: '#f0eaff',
+      activeFill: 0x2e2050
+    });
+    this.layoutAudioToggleButtons();
+    this.syncAudioToggleButtons();
+  }
+
   createCanvasShoutButton(label: string, onClick: (() => void) | null, style: CanvasButtonStyle = {}) {
     const width = style.width ?? 98;
     const height = style.height ?? 38;
@@ -2209,6 +2303,14 @@ export class RunningMainScene extends Phaser.Scene {
     this.uiPauseButton.setPosition(baseX + 236, baseY);
   }
 
+  layoutAudioToggleButtons(): void {
+    if (!this.uiBgmToggleButton || !this.uiSfxToggleButton) {
+      return;
+    }
+    this.uiBgmToggleButton.setPosition(72, 52);
+    this.uiSfxToggleButton.setPosition(194, 52);
+  }
+
   createFpsOverlay(): void {
     const w = this.scale.width;
     this.uiFpsText = this.add
@@ -2225,6 +2327,24 @@ export class RunningMainScene extends Phaser.Scene {
     this.nextFpsUpdateAt = 0;
   }
 
+  createRunTimerOverlay(): void {
+    const w = this.scale.width;
+    const h = this.scale.height;
+    this.uiRunTimerText = this.add
+      .text(w - 10, h - 10, 'TIME 00:00:00', {
+        fontFamily: 'monospace',
+        fontSize: '14px',
+        color: '#f6f2cf',
+        backgroundColor: 'rgba(6,16,30,0.55)',
+        padding: { x: 6, y: 3 }
+      })
+      .setOrigin(1, 1)
+      .setDepth(95)
+      .setScrollFactor(0);
+    this.nextRunTimerUpdateAt = 0;
+    this.updateRunTimerOverlay(true);
+  }
+
   updateFpsOverlay(): void {
     if (!this.uiFpsText) {
       return;
@@ -2238,11 +2358,72 @@ export class RunningMainScene extends Phaser.Scene {
     this.uiFpsText.setText(`FPS ${fps.toFixed(1)}`);
   }
 
+  updateRunTimerOverlay(force = false): void {
+    if (!this.uiRunTimerText) {
+      return;
+    }
+    const now = this.time.now;
+    if (!force && now < this.nextRunTimerUpdateAt) {
+      return;
+    }
+    this.nextRunTimerUpdateAt = now + RUN_TIMER_UPDATE_INTERVAL_MS;
+    this.uiRunTimerText.setText(`TIME ${this.formatElapsedTime(this.runElapsedMs)}`);
+  }
+
   layoutFpsOverlay(width: number): void {
     if (!this.uiFpsText) {
       return;
     }
     this.uiFpsText.setPosition(width - 10, 10);
+  }
+
+  layoutRunTimerOverlay(width: number, height: number): void {
+    if (!this.uiRunTimerText) {
+      return;
+    }
+    this.uiRunTimerText.setPosition(width - 10, height - 10);
+  }
+
+  formatElapsedTime(elapsedMs: number): string {
+    const totalSec = Math.max(0, Math.floor(elapsedMs / 1000));
+    const hours = Math.floor(totalSec / 3600);
+    const minutes = Math.floor((totalSec % 3600) / 60);
+    const seconds = totalSec % 60;
+    const hh = String(hours).padStart(2, '0');
+    const mm = String(minutes).padStart(2, '0');
+    const ss = String(seconds).padStart(2, '0');
+    return `${hh}:${mm}:${ss}`;
+  }
+
+  setBackgroundAudioEnabled(enabled: boolean): void {
+    this.backgroundAudioEnabled = Boolean(enabled);
+    this.audioSystem?.setEnabled(this.backgroundAudioEnabled && !this.gamePaused);
+    this.setRainEmitting(this.rainEmitting);
+    this.syncAudioToggleButtons();
+  }
+
+  setSfxEnabled(enabled: boolean): void {
+    this.sfxEnabled = Boolean(enabled);
+    this.syncAudioToggleButtons();
+  }
+
+  syncAudioToggleButtons(): void {
+    const bgmText = this.uiBgmToggleButton?.getData('text') as Phaser.GameObjects.Text | undefined;
+    const bgmBack = this.uiBgmToggleButton?.getData('back') as Phaser.GameObjects.Rectangle | undefined;
+    const sfxText = this.uiSfxToggleButton?.getData('text') as Phaser.GameObjects.Text | undefined;
+    const sfxBack = this.uiSfxToggleButton?.getData('back') as Phaser.GameObjects.Rectangle | undefined;
+
+    if (bgmText && bgmBack) {
+      bgmText.setText(this.backgroundAudioEnabled ? 'BGM ON' : 'BGM OFF');
+      bgmText.setColor(this.backgroundAudioEnabled ? '#e8f2ff' : '#cbd5e1');
+      bgmBack.setFillStyle(this.backgroundAudioEnabled ? 0x1f355e : 0x2a2a2a, 0.92);
+    }
+
+    if (sfxText && sfxBack) {
+      sfxText.setText(this.sfxEnabled ? 'SFX ON' : 'SFX OFF');
+      sfxText.setColor(this.sfxEnabled ? '#f0eaff' : '#cbd5e1');
+      sfxBack.setFillStyle(this.sfxEnabled ? 0x3d2b63 : 0x2a2a2a, 0.92);
+    }
   }
 
   toggleGamePause(): void {
@@ -2282,9 +2463,14 @@ export class RunningMainScene extends Phaser.Scene {
       this.tweens.resumeAll();
       this.anims.resumeAll();
       this.sound.resumeAll();
-      this.resumeBackgroundMusicAfterPause();
+      if (this.backgroundAudioEnabled) {
+        this.resumeBackgroundMusicAfterPause();
+      }
     }
+    this.audioSystem?.setEnabled(this.backgroundAudioEnabled && !this.gamePaused);
+    this.setRainEmitting(this.rainEmitting);
     this.syncPauseButtonUi();
+    this.syncAudioToggleButtons();
   }
 
   pauseBackgroundMusicHard(): void {

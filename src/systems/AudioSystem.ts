@@ -17,6 +17,7 @@ const BGM_MELODY_PHRASES = [
 
 export class AudioSystem {
   scene: Phaser.Scene;
+  enabled: boolean;
   bgmRunning: boolean;
   bgmMasterGain: GainNode | null;
   bgmOscillators: Array<{ osc: OscillatorNode; gain: GainNode }>;
@@ -28,6 +29,7 @@ export class AudioSystem {
 
   constructor(scene: Phaser.Scene) {
     this.scene = scene;
+    this.enabled = true;
     this.bgmRunning = false;
     this.bgmMasterGain = null;
     this.bgmOscillators = [];
@@ -108,6 +110,9 @@ export class AudioSystem {
   }
 
   tryStartBackgroundMusic(): void {
+    if (!this.enabled) {
+      return;
+    }
     if (this.bgmRunning) {
       return;
     }
@@ -388,6 +393,15 @@ export class AudioSystem {
   }
 
   resumeBackgroundMusicAfterPause(): void {
+    this.tryStartBackgroundMusic();
+  }
+
+  setEnabled(enabled: boolean): void {
+    this.enabled = Boolean(enabled);
+    if (!this.enabled) {
+      this.pauseBackgroundMusicHard();
+      return;
+    }
     this.tryStartBackgroundMusic();
   }
 }
