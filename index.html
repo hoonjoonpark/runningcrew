@@ -1,0 +1,225 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Phaser Sprite Sheet Tester</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet" />
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        width: 100%;
+        height: 100dvh;
+        background: #111827;
+        overflow: hidden;
+        touch-action: none;
+      }
+
+      #layout {
+        display: flex;
+        width: 100%;
+        height: 100%;
+        background: #111827;
+      }
+
+      #left-pane {
+        flex: 1 1 50%;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+
+      #game-pane {
+        height: 50%;
+        background: #0b1220;
+        overflow: hidden;
+      }
+
+      #app {
+        width: 100%;
+        height: 100%;
+      }
+
+      #app canvas {
+        display: block;
+        width: 100% !important;
+        height: 100% !important;
+        border: 0;
+      }
+
+      #map-pane {
+        flex: 1 1 50%;
+        height: 100%;
+        background: #0b1220;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+
+      #map-frame {
+        display: block;
+        width: 100%;
+        height: 100%;
+        border: 0;
+      }
+
+      #hud-pane {
+        height: 50%;
+        overflow-y: scroll;
+        overflow-x: hidden;
+        -webkit-overflow-scrolling: touch;
+      }
+
+      .font-press {
+        font-family: 'Press Start 2P', monospace;
+      }
+
+      #hud-pane button {
+        appearance: none;
+        -webkit-appearance: none;
+        outline: none;
+        box-shadow: none;
+        text-decoration: none;
+        -webkit-tap-highlight-color: transparent;
+        background-clip: padding-box;
+        transform: translateZ(0);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        line-height: 1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-rendering: geometricPrecision;
+      }
+
+      #hud-pane button:focus,
+      #hud-pane button:focus-visible,
+      #hud-pane button:active {
+        outline: none !important;
+        box-shadow: none !important;
+      }
+
+      canvas {
+        image-rendering: pixelated;
+        image-rendering: crisp-edges;
+      }
+
+      @media (max-width: 900px) {
+        #layout {
+          flex-direction: column;
+        }
+
+        #left-pane,
+        #map-pane {
+          height: 50%;
+        }
+
+        #game-pane,
+        #hud-pane {
+          height: 50%;
+        }
+      }
+
+      body.mode-select #left-pane {
+        flex: 1 1 100%;
+      }
+
+      body.mode-select #game-pane {
+        height: 100%;
+      }
+
+      body.mode-select #hud-pane,
+      body.mode-select #map-pane {
+        display: none;
+      }
+    </style>
+  </head>
+  <body class="mode-select">
+    <div id="layout">
+      <section id="left-pane">
+        <section id="game-pane">
+          <div id="app"></div>
+        </section>
+        <div
+          id="hud-pane"
+          class="font-press bg-slate-900 text-slate-100 p-4 sm:p-5 border-t-4 border-sky-300"
+        >
+          <div class="h-full w-full rounded-sm border-4 border-sky-300 bg-slate-800 p-3 sm:p-4 flex flex-col gap-3">
+            <div class="text-[10px] sm:text-xs text-yellow-300 tracking-wider">RUNNER CONTROL</div>
+            <div class="grid grid-cols-2 gap-2 text-[10px] sm:text-[11px]">
+              <div class="rounded border-2 border-emerald-300 bg-slate-900 px-2 py-2">
+                <div class="text-emerald-200">COIN</div>
+                <div id="hud-coin" class="mt-2 text-white">0</div>
+              </div>
+              <div class="rounded border-2 border-cyan-300 bg-slate-900 px-2 py-2">
+                <div class="text-cyan-200">CHAR</div>
+                <div id="hud-party" class="mt-2 text-white">1</div>
+              </div>
+            </div>
+            <div class="rounded border-2 border-rose-300 bg-slate-900 px-2 py-2 text-[10px] sm:text-[11px]">
+              <div class="text-rose-200">HP</div>
+              <div class="mt-2 flex items-center justify-between gap-2">
+                <div class="h-3 flex-1 rounded-sm border border-rose-300 bg-slate-950 overflow-hidden">
+                  <div id="hud-hp-bar" class="h-full w-full bg-rose-400"></div>
+                </div>
+                <span id="hud-hp" class="text-white">100%</span>
+              </div>
+            </div>
+            <div class="grid grid-cols-1 gap-2 mt-auto text-[10px] sm:text-[11px]">
+              <button
+                id="btn-potion"
+                class="w-full rounded border-2 border-amber-300 bg-amber-500/20 px-3 py-2 text-amber-100 active:translate-y-px"
+              >
+                DRINK POTION (-10 COIN)
+              </button>
+              <div class="grid grid-cols-2 gap-2">
+                <button
+                  id="btn-magnet"
+                  class="rounded border-2 border-blue-300 bg-blue-500/20 px-3 py-2 text-blue-100 active:translate-y-px"
+                >
+                  MAGNET OFF
+                </button>
+                <button
+                  id="btn-auto"
+                  class="rounded border-2 border-fuchsia-300 bg-fuchsia-500/20 px-3 py-2 text-fuchsia-100 active:translate-y-px"
+                >
+                  AUTO OFF
+                </button>
+              </div>
+              <div class="grid grid-cols-2 gap-2">
+                <button
+                  id="btn-shift"
+                  class="rounded border-2 border-lime-300 bg-lime-500/20 px-3 py-2 text-lime-100 active:translate-y-px"
+                >
+                  SHIFT OFF
+                </button>
+                <button
+                  id="btn-rain"
+                  class="rounded border-2 border-cyan-300 bg-cyan-500/20 px-3 py-2 text-cyan-100 active:translate-y-px"
+                >
+                  RAIN AUTO
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+      <aside id="map-pane">
+        <iframe
+          id="map-frame"
+          title="Google Map"
+          loading="lazy"
+          allowfullscreen
+          referrerpolicy="no-referrer-when-downgrade"
+          src="https://maps.google.com/maps?q=Seoul&z=12&output=embed"
+        ></iframe>
+      </aside>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
