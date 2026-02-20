@@ -64,14 +64,18 @@ const LEADER_SCALE = 0.62;
 // lower value => everything moves upward.
 const RUNNER_BASE_Y_RATIO = 0.66;
 const GROUND_Y_RATIO = RUNNER_BASE_Y_RATIO + 0.15;
-const PARTY_BASE_SPACING_X = 30;
-const PARTY_FORMATION_SWAY_X = 70;
+const PARTY_BASE_SPACING_X = 36;
+const PARTY_FORMATION_SWAY_X = 120;
 const PARTY_FORMATION_SWAY_Y = 0;
 const PARTY_SWAY_BASE_SPEED = 0.56;
 const PARTY_FOLLOW_LERP_BASE = 0.05;
 const PARTY_FOLLOW_LERP_DT = 0.18;
+const PARTY_FOLLOW_LERP_MIN = 0.06;
+const PARTY_FOLLOW_LERP_MAX = 0.24;
+const PARTY_MAX_X_STEP_PER_SEC = 920;
+const PARTY_MAX_Y_STEP_PER_SEC = 760;
 const JUMP_TILT_DEG = 8;
-const MAX_PARTY_SIZE = 20;
+const MAX_PARTY_SIZE = 50;
 const ALLY_ITEM_CHANCE_PERCENT = 18;
 // Relative to leader scale (0.8~1.1 => 80%~110% of leader size).
 const FOLLOWER_MIN_SCALE_RATIO = 0.8;
@@ -92,6 +96,7 @@ const RAIN_DROP_COUNT = 140;
 const RAIN_SFX_VOLUME = 0.18;
 const FPS_UPDATE_INTERVAL_MS = 150;
 const RUN_TIMER_UPDATE_INTERVAL_MS = 200;
+const BOTTOM_METRICS_GAP_PX = 14;
 const AVATAR_CONFIGS: Record<string, { runSheet: string; idleSheet: string }> = {
   batcop: {
     runSheet: BATCOP_RUN_KEY,
@@ -224,6 +229,7 @@ export class RunningMainScene extends Phaser.Scene {
   nextFpsUpdateAt = 0;
   nextRunTimerUpdateAt = 0;
   runElapsedMs = 0;
+  runDistanceM = 0;
   uiHealthGaugeHeight = 220;
 
   uiFill: Phaser.GameObjects.Graphics | null = null;
@@ -245,8 +251,15 @@ export class RunningMainScene extends Phaser.Scene {
   uiSfxToggleButton: Phaser.GameObjects.Container | null = null;
   uiFpsText: Phaser.GameObjects.Text | null = null;
   uiRunTimerText: Phaser.GameObjects.Text | null = null;
+  uiDistanceText: Phaser.GameObjects.Text | null = null;
+  uiRenderDebugText: Phaser.GameObjects.Text | null = null;
+  lastRenderDebugLog = '';
   backgroundAudioEnabled = true;
   sfxEnabled = true;
+  sfxPlaybackAllowed = true;
+  appFocusHandler: (() => void) | null = null;
+  appBlurHandler: (() => void) | null = null;
+  appVisibilityHandler: (() => void) | null = null;
 
   constructor() {
     super('RunningMainScene');
@@ -254,7 +267,6 @@ export class RunningMainScene extends Phaser.Scene {
 
   preload(): void {
     this.load.image(BG_LOOP_KEY, '/assets/1.webp');
-    this.load.audio(RAIN_SOUND_KEY, '/assets/sound/rain.mp3');
 
     this.load.spritesheet(BATCOP_RUN_KEY, '/assets/characters/batcop-run-v1.png', {
       frameWidth: FRAME_WIDTH,
@@ -399,13 +411,61 @@ export class RunningMainScene extends Phaser.Scene {
     this.createAudioToggleButtons();
     this.createFpsOverlay();
     this.createRunTimerOverlay();
+    this.createRenderDebugOverlay();
     this.runElapsedMs = 0;
+    this.runDistanceM = 0;
     this.nextExternalUiEmitAt = 0;
     this.emitExternalUiState(true);
     this.handleResize(this.scale.gameSize);
+    this.time.delayedCall(0, () => {
+      this.scale.refresh();
+      this.handleResize(this.scale.gameSize);
+    });
+    this.sound.pauseOnBlur = false;
+    this.setupSfxFocusGate();
     this.audioSystem = new AudioSystem(this);
     this.setupBackgroundMusic();
     this.setupRainCycle();
+  }
+
+  setupSfxFocusGate(): void {
+    this.sfxPlaybackAllowed = !document.hidden;
+    this.appFocusHandler = () => {
+      this.sfxPlaybackAllowed = true;
+      this.setRainEmitting(this.rainEmitting);
+    };
+    this.appBlurHandler = () => {
+      this.sfxPlaybackAllowed = false;
+      this.sound.stopAll();
+    };
+    this.appVisibilityHandler = () => {
+      this.sfxPlaybackAllowed = !document.hidden;
+      if (!this.sfxPlaybackAllowed) {
+        this.sound.stopAll();
+      } else {
+        this.setRainEmitting(this.rainEmitting);
+      }
+    };
+    window.addEventListener('focus', this.appFocusHandler);
+    window.addEventListener('blur', this.appBlurHandler);
+    document.addEventListener('visibilitychange', this.appVisibilityHandler);
+    this.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.teardownSfxFocusGate());
+    this.events.once(Phaser.Scenes.Events.DESTROY, () => this.teardownSfxFocusGate());
+  }
+
+  teardownSfxFocusGate(): void {
+    if (this.appFocusHandler) {
+      window.removeEventListener('focus', this.appFocusHandler);
+      this.appFocusHandler = null;
+    }
+    if (this.appBlurHandler) {
+      window.removeEventListener('blur', this.appBlurHandler);
+      this.appBlurHandler = null;
+    }
+    if (this.appVisibilityHandler) {
+      document.removeEventListener('visibilitychange', this.appVisibilityHandler);
+      this.appVisibilityHandler = null;
+    }
   }
 
   update(_: number, delta: number): void {
@@ -451,6 +511,7 @@ export class RunningMainScene extends Phaser.Scene {
     this.updateLoopBackground(scrollInputSpeed * BG_SCROLL_FACTOR * dt);
     this.updateRainOverlay(dt);
     this.updateFpsOverlay();
+    this.updateRunDistance(dt, Math.abs(scrollInputSpeed));
     this.runElapsedMs += delta;
     this.updateRunTimerOverlay();
     this.updateCoins(scrollInputSpeed);
@@ -470,7 +531,7 @@ export class RunningMainScene extends Phaser.Scene {
     const healthDrainMultiplier = movingHorizontally ? Math.max(1, Math.abs(scrollInputSpeed) / MOVE_SPEED) : 1;
     this.updateHealth(dt, movingHorizontally && onGround, healthDrainMultiplier);
     this.syncPartyAnimation(movingHorizontally && onGround, runAnimSpeed);
-    this.updatePartyFormation(dt, movingHorizontally);
+    this.updatePartyFormation(dt, movingHorizontally, onGround);
     this.updatePartyTilt(onGround);
     this.updateSpeechBubbles();
     this.maybeSpawnSpeechBubble();
@@ -690,13 +751,16 @@ export class RunningMainScene extends Phaser.Scene {
     }
   }
 
-  updatePartyFormation(dt: number, movingHorizontally: boolean): void {
+  updatePartyFormation(dt: number, movingHorizontally: boolean, onGround: boolean): void {
     if (!this.partyMembers || this.partyMembers.length < 2) {
       return;
     }
     const totalFollowers = this.partyMembers.length - 1;
     const leadScale = this.partyMembers[0]?.scaleFactor ?? LEADER_SCALE;
     const t = this.time.now / 1000;
+    const lerp = Phaser.Math.Clamp(PARTY_FOLLOW_LERP_BASE + dt * PARTY_FOLLOW_LERP_DT, PARTY_FOLLOW_LERP_MIN, PARTY_FOLLOW_LERP_MAX);
+    const maxStepX = PARTY_MAX_X_STEP_PER_SEC * dt;
+    const maxStepY = PARTY_MAX_Y_STEP_PER_SEC * dt;
     for (let i = 1; i < this.partyMembers.length; i += 1) {
       const member = this.partyMembers[i];
       if (!member) {
@@ -705,20 +769,28 @@ export class RunningMainScene extends Phaser.Scene {
       const s = member.sprite;
 
       const rank = i - 1;
-      const baseX = (rank - (totalFollowers - 1) * 0.5) * PARTY_BASE_SPACING_X;
+      const centeredCol = rank - (totalFollowers - 1) * 0.5;
+      const baseX = centeredCol * PARTY_BASE_SPACING_X;
       const baseY = 0;
-      const aheadBehind = movingHorizontally
+      const aheadBehind = movingHorizontally && onGround
         ? Math.sin(t * (PARTY_SWAY_BASE_SPEED + i * 0.03) + member.phase) * PARTY_FORMATION_SWAY_X
         : 0;
-      const nearFar = movingHorizontally
-        ? Math.cos(t * (PARTY_SWAY_BASE_SPEED * 1.14 + i * 0.03) + member.phase) * PARTY_FORMATION_SWAY_Y
-        : 0;
+      if (onGround) {
+        s.setData('airHoldDx', undefined);
+      } else if (s.getData('airHoldDx') === undefined) {
+        s.setData('airHoldDx', s.x - this.runner.x);
+      }
+      const airHoldDx = Number(s.getData('airHoldDx'));
+      const holdX = Number.isFinite(airHoldDx) ? airHoldDx : baseX;
+      const nearFar = 0;
       const sizeYOffset = (leadScale - member.scaleFactor) * FRAME_HEIGHT * 0.5;
-      const targetX = this.runner.x + baseX + aheadBehind;
+      const targetX = onGround ? this.runner.x + baseX + aheadBehind : this.runner.x + holdX;
       const targetY = this.runner.y + baseY + nearFar + sizeYOffset;
 
-      s.x = Phaser.Math.Linear(s.x, targetX, PARTY_FOLLOW_LERP_BASE + dt * PARTY_FOLLOW_LERP_DT);
-      s.y = Phaser.Math.Linear(s.y, targetY, PARTY_FOLLOW_LERP_BASE + dt * PARTY_FOLLOW_LERP_DT);
+      const nextX = Phaser.Math.Linear(s.x, targetX, lerp);
+      const nextY = Phaser.Math.Linear(s.y, targetY, lerp);
+      s.x += Phaser.Math.Clamp(nextX - s.x, -maxStepX, maxStepX);
+      s.y += Phaser.Math.Clamp(nextY - s.y, -maxStepY, maxStepY);
       s.setFlipX(this.runner.flipX);
       s.setDepth(8 + i + Math.floor(aheadBehind * 0.025));
     }
@@ -1104,10 +1176,12 @@ export class RunningMainScene extends Phaser.Scene {
 
     this.coinScore -= HEALTH_RECHARGE_COST;
     this.healthRatio = Phaser.Math.Clamp(this.healthRatio + HEALTH_RECHARGE_RATIO, 0, 1);
+    this.playPotionDrinkSound();
     if (this.uiScore) {
       this.uiScore.setText(`COIN ${this.coinScore}`);
     }
     this.updateHealthUi();
+    this.cameras.main.flash(90, 170, 255, 200, false);
     this.emitExternalUiState(true);
   }
 
@@ -1190,6 +1264,9 @@ export class RunningMainScene extends Phaser.Scene {
   }
 
   getAudioContext(): AudioContext | null {
+    if (!this.sfxPlaybackAllowed) {
+      return null;
+    }
     const manager = this.sound as Phaser.Sound.WebAudioSoundManager | undefined;
     const audioContext = manager?.context as AudioContext | undefined;
     if (!audioContext || audioContext.state !== 'running') {
@@ -1411,6 +1488,55 @@ export class RunningMainScene extends Phaser.Scene {
     osc.stop(now + 0.28);
   }
 
+  playPotionDrinkSound(): void {
+    if (!this.sfxEnabled) {
+      return;
+    }
+    const ctx = this.getAudioContext();
+    if (!ctx) {
+      return;
+    }
+
+    const now = ctx.currentTime;
+    const master = ctx.createGain();
+    master.gain.setValueAtTime(0.58, now);
+    master.connect(ctx.destination);
+
+    const pulses = [
+      { t: now, base: 220, peak: 300, amp: 0.04 },
+      { t: now + 0.11, base: 280, peak: 380, amp: 0.046 },
+      { t: now + 0.22, base: 360, peak: 510, amp: 0.052 }
+    ];
+
+    for (const pulse of pulses) {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.frequency.setValueAtTime(pulse.base, pulse.t);
+      osc.frequency.exponentialRampToValueAtTime(pulse.peak, pulse.t + 0.06);
+      gain.gain.setValueAtTime(0.0001, pulse.t);
+      gain.gain.exponentialRampToValueAtTime(pulse.amp, pulse.t + 0.016);
+      gain.gain.exponentialRampToValueAtTime(0.0001, pulse.t + 0.09);
+      osc.connect(gain);
+      gain.connect(master);
+      osc.start(pulse.t);
+      osc.stop(pulse.t + 0.1);
+    }
+
+    const tail = ctx.createOscillator();
+    const tailGain = ctx.createGain();
+    tail.type = 'sine';
+    tail.frequency.setValueAtTime(600, now + 0.33);
+    tail.frequency.exponentialRampToValueAtTime(820, now + 0.42);
+    tailGain.gain.setValueAtTime(0.0001, now + 0.33);
+    tailGain.gain.exponentialRampToValueAtTime(0.022, now + 0.355);
+    tailGain.gain.exponentialRampToValueAtTime(0.0001, now + 0.44);
+    tail.connect(tailGain);
+    tailGain.connect(master);
+    tail.start(now + 0.33);
+    tail.stop(now + 0.45);
+  }
+
   showKingCoinCollectFx(x: number, y: number, value: number): void {
     const burst = this.add.graphics().setDepth(40);
     burst.fillStyle(0xfff2a8, 1);
@@ -1514,6 +1640,7 @@ export class RunningMainScene extends Phaser.Scene {
       ease: 'Cubic.easeOut',
       onComplete: () => text.destroy()
     });
+    this.cameras.main.flash(80, 150, 255, 215, false);
   }
 
   showAutoItemFx(x: number, y: number): void {
@@ -1535,6 +1662,7 @@ export class RunningMainScene extends Phaser.Scene {
       ease: 'Cubic.easeOut',
       onComplete: () => text.destroy()
     });
+    this.cameras.main.flash(80, 180, 220, 255, false);
   }
 
   showAllyJoinFx(x: number, y: number, avatarId: AvatarId): void {
@@ -1743,6 +1871,12 @@ export class RunningMainScene extends Phaser.Scene {
 
   handleResize(gameSize: Phaser.Structs.Size): void {
     const { width, height } = gameSize;
+    const cam = this.cameras.main;
+      console.log(width, height);
+    if (cam) {
+      cam.setViewport(0, 0, width, height);
+      cam.setSize(width, height);
+    }
     if (!this.bgSegments || !this.runner || !this.ground) {
       return;
     }
@@ -1857,7 +1991,7 @@ export class RunningMainScene extends Phaser.Scene {
   }
 
   playFootstepSound(speedRatio = 1): void {
-    if (!this.sfxEnabled) {
+    if (!this.sfxEnabled || !this.sfxPlaybackAllowed) {
       return;
     }
     this.audioSystem?.playFootstepSound(speedRatio);
@@ -1866,7 +2000,8 @@ export class RunningMainScene extends Phaser.Scene {
   createRainTexture(): void {}
 
   setupRainCycle(): void {
-    const { width, height } = this.scale;
+    const width = this.scale.width;
+    const height = this.scale.height;
     this.rainWidth = width;
     this.rainHeight = height;
     this.rainGraphics = this.add.graphics().setDepth(9);
@@ -2165,7 +2300,6 @@ export class RunningMainScene extends Phaser.Scene {
       .setOrigin(0.5);
 
     edge.fillStyle(0x93b9ff, 1);
-    this.drawRetroFrame(edge, -63, -24, 126, 48, 3, 0x93b9ff, 0x0a1427, 0x101b2f, true);
 
     container.add([shadow, back, edge, text]);
     container.setSize(126, 48);
@@ -2328,8 +2462,19 @@ export class RunningMainScene extends Phaser.Scene {
   }
 
   createRunTimerOverlay(): void {
-    const w = this.scale.width;
     const h = this.scale.height;
+    this.uiDistanceText = this.add
+      .text(0, h - 10, 'KM 0.000', {
+        fontFamily: 'monospace',
+        fontSize: '14px',
+        color: '#bde8ff',
+        backgroundColor: 'rgba(6,16,30,0.55)',
+        padding: { x: 6, y: 3 }
+      })
+      .setOrigin(1, 1)
+      .setDepth(95)
+      .setScrollFactor(0);
+    const w = this.scale.width;
     this.uiRunTimerText = this.add
       .text(w - 10, h - 10, 'TIME 00:00:00', {
         fontFamily: 'monospace',
@@ -2343,6 +2488,23 @@ export class RunningMainScene extends Phaser.Scene {
       .setScrollFactor(0);
     this.nextRunTimerUpdateAt = 0;
     this.updateRunTimerOverlay(true);
+  }
+
+  createRenderDebugOverlay(): void {
+    const w = this.scale.width;
+    const h = this.scale.height;
+    this.uiRenderDebugText = this.add
+      .text(w - 10, h - 38, 'DBG --', {
+        fontFamily: 'monospace',
+        fontSize: '11px',
+        color: '#ffd9a8',
+        backgroundColor: 'rgba(6,16,30,0.55)',
+        padding: { x: 5, y: 3 }
+      })
+      .setOrigin(1, 1)
+      .setDepth(95)
+      .setScrollFactor(0);
+    this.updateRenderDebugOverlay();
   }
 
   updateFpsOverlay(): void {
@@ -2359,7 +2521,7 @@ export class RunningMainScene extends Phaser.Scene {
   }
 
   updateRunTimerOverlay(force = false): void {
-    if (!this.uiRunTimerText) {
+    if (!this.uiRunTimerText || !this.uiDistanceText) {
       return;
     }
     const now = this.time.now;
@@ -2368,6 +2530,9 @@ export class RunningMainScene extends Phaser.Scene {
     }
     this.nextRunTimerUpdateAt = now + RUN_TIMER_UPDATE_INTERVAL_MS;
     this.uiRunTimerText.setText(`TIME ${this.formatElapsedTime(this.runElapsedMs)}`);
+    this.uiDistanceText.setText(`KM ${(this.runDistanceM / 1000).toFixed(3)}`);
+    this.updateRenderDebugOverlay();
+    this.layoutRunTimerOverlay(this.scale.width, this.scale.height);
   }
 
   layoutFpsOverlay(width: number): void {
@@ -2378,10 +2543,36 @@ export class RunningMainScene extends Phaser.Scene {
   }
 
   layoutRunTimerOverlay(width: number, height: number): void {
-    if (!this.uiRunTimerText) {
+    if (!this.uiRunTimerText || !this.uiDistanceText) {
       return;
     }
-    this.uiRunTimerText.setPosition(width - 10, height - 10);
+    const rightX = width - 10;
+    const bottomY = height - 10;
+    this.uiRunTimerText.setPosition(rightX, bottomY);
+    this.uiDistanceText.setPosition(rightX - this.uiRunTimerText.width - BOTTOM_METRICS_GAP_PX, bottomY);
+    if (this.uiRenderDebugText) {
+      this.uiRenderDebugText.setPosition(rightX, bottomY - this.uiRunTimerText.height - 8);
+    }
+  }
+
+  updateRenderDebugOverlay(): void {
+    if (!this.uiRenderDebugText) {
+      return;
+    }
+    const canvas = this.game.canvas;
+    const cssW = canvas?.clientWidth ?? 0;
+    const cssH = canvas?.clientHeight ?? 0;
+    const bufW = canvas?.width ?? 0;
+    const bufH = canvas?.height ?? 0;
+    const cam = this.cameras.main;
+    const dpr = window.devicePixelRatio || 1;
+    const line =
+      `DBG css:${cssW}x${cssH} buf:${bufW}x${bufH} world:${Math.round(this.scale.width)}x${Math.round(this.scale.height)} zoom:${cam.zoom.toFixed(2)} dpr:${dpr.toFixed(2)}`;
+    this.uiRenderDebugText.setText(line);
+    if (line !== this.lastRenderDebugLog) {
+      this.lastRenderDebugLog = line;
+      console.log(line);
+    }
   }
 
   formatElapsedTime(elapsedMs: number): string {
@@ -2393,6 +2584,24 @@ export class RunningMainScene extends Phaser.Scene {
     const mm = String(minutes).padStart(2, '0');
     const ss = String(seconds).padStart(2, '0');
     return `${hh}:${mm}:${ss}`;
+  }
+
+  getDistanceMetersPerSec(speedAbs: number): number {
+    const highSpeed = speedAbs >= MOVE_SPEED * 1.4;
+    const min = highSpeed ? 4 : 2;
+    const max = highSpeed ? 4.5 : 3;
+    const t = this.time.now * 0.0023 + this.partyMembers.length * 0.19;
+    const ratio = 0.5 + 0.5 * Math.sin(t);
+    return Phaser.Math.Linear(min, max, ratio);
+  }
+
+  updateRunDistance(dt: number, speedAbs: number): void {
+    if (speedAbs <= 5) {
+      return;
+    }
+    const partyCount = Math.max(1, this.partyMembers.length);
+    const metersPerSec = this.getDistanceMetersPerSec(speedAbs) * partyCount;
+    this.runDistanceM += metersPerSec * dt;
   }
 
   setBackgroundAudioEnabled(enabled: boolean): void {
@@ -2530,7 +2739,6 @@ export class RunningMainScene extends Phaser.Scene {
     this.uiFill.clear();
 
     this.uiFrame.clear();
-    this.drawRetroFrame(this.uiFrame, frameX, frameY, frameW, frameH, 4, 0xa4c6ff, 0x060b16, 0x101c30, false);
     this.updateHealthUi();
   }
 
@@ -2641,33 +2849,4 @@ export class RunningMainScene extends Phaser.Scene {
     }
     this.updateActiveItemsUi();
   }
-
-  drawRetroFrame(
-    graphics: Phaser.GameObjects.Graphics,
-    x: number,
-    y: number,
-    width: number,
-    height: number,
-    thickness: number,
-    lightColor: number,
-    darkColor: number,
-    faceColor: number,
-    fillFace = true
-  ): void {
-    if (fillFace) {
-      graphics.fillStyle(darkColor, 1);
-      graphics.fillRect(x, y, width, height);
-      graphics.fillStyle(faceColor, 1);
-      graphics.fillRect(x + thickness, y + thickness, width - thickness * 2, height - thickness * 2);
-    }
-
-    graphics.fillStyle(lightColor, 1);
-    graphics.fillRect(x, y, width, thickness);
-    graphics.fillRect(x, y, thickness, height);
-
-    graphics.fillStyle(darkColor, 1);
-    graphics.fillRect(x, y + height - thickness, width, thickness);
-    graphics.fillRect(x + width - thickness, y, thickness, height);
-  }
-
 }

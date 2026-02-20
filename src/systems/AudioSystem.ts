@@ -26,6 +26,10 @@ export class AudioSystem {
   bgmPhraseIndex: number;
   bgmBeatCounter: number;
   bgmStartHandler: (() => void) | null;
+  bgmContextStateHandler: (() => void) | null;
+  bgmFocusHandler: (() => void) | null;
+  bgmBlurHandler: (() => void) | null;
+  bgmVisibilityHandler: (() => void) | null;
 
   constructor(scene: Phaser.Scene) {
     this.scene = scene;
@@ -38,6 +42,10 @@ export class AudioSystem {
     this.bgmPhraseIndex = 0;
     this.bgmBeatCounter = 0;
     this.bgmStartHandler = null;
+    this.bgmContextStateHandler = null;
+    this.bgmFocusHandler = null;
+    this.bgmBlurHandler = null;
+    this.bgmVisibilityHandler = null;
   }
 
   private getAudioContext(): AudioContext | null {
@@ -104,6 +112,27 @@ export class AudioSystem {
     this.bgmStartHandler = () => this.tryStartBackgroundMusic();
     window.addEventListener('pointerdown', this.bgmStartHandler);
     window.addEventListener('keydown', this.bgmStartHandler);
+    this.bgmFocusHandler = () => this.tryStartBackgroundMusic();
+    window.addEventListener('focus', this.bgmFocusHandler);
+    this.bgmBlurHandler = () => this.pauseBackgroundMusicHard();
+    window.addEventListener('blur', this.bgmBlurHandler);
+    this.bgmVisibilityHandler = () => {
+      if (document.hidden) {
+        this.pauseBackgroundMusicHard();
+      } else {
+        this.tryStartBackgroundMusic();
+      }
+    };
+    document.addEventListener('visibilitychange', this.bgmVisibilityHandler);
+    const ctx = this.getAudioContext();
+    if (ctx) {
+      this.bgmContextStateHandler = () => {
+        if (ctx.state === 'running') {
+          this.tryStartBackgroundMusic();
+        }
+      };
+      ctx.addEventListener('statechange', this.bgmContextStateHandler);
+    }
     this.scene.events.once(Phaser.Scenes.Events.SHUTDOWN, () => this.teardownBackgroundMusic());
     this.scene.events.once(Phaser.Scenes.Events.DESTROY, () => this.teardownBackgroundMusic());
     this.tryStartBackgroundMusic();
@@ -113,12 +142,30 @@ export class AudioSystem {
     if (!this.enabled) {
       return;
     }
-    if (this.bgmRunning) {
+    const ctx = this.getAudioContext();
+    if (!ctx) {
       return;
     }
-    const ctx = this.getAudioContext();
-    if (!ctx || ctx.state !== 'running') {
+
+    if (ctx.state !== 'running') {
+      ctx.resume().then(() => {
+        this.tryStartBackgroundMusic();
+      }).catch(() => {
+        // ignore
+      });
       return;
+    }
+
+    if (this.bgmRunning &&
+      this.bgmMasterGain &&
+      this.bgmOscillators.length >= 3 &&
+      this.bgmPulseTimer &&
+      this.bgmMelodyTimer) {
+      return;
+    }
+
+    if (this.bgmRunning) {
+      this.pauseBackgroundMusicHard();
     }
 
     const master = ctx.createGain();
@@ -338,6 +385,23 @@ export class AudioSystem {
       window.removeEventListener('keydown', this.bgmStartHandler);
       this.bgmStartHandler = null;
     }
+    if (this.bgmFocusHandler) {
+      window.removeEventListener('focus', this.bgmFocusHandler);
+      this.bgmFocusHandler = null;
+    }
+    if (this.bgmBlurHandler) {
+      window.removeEventListener('blur', this.bgmBlurHandler);
+      this.bgmBlurHandler = null;
+    }
+    if (this.bgmVisibilityHandler) {
+      document.removeEventListener('visibilitychange', this.bgmVisibilityHandler);
+      this.bgmVisibilityHandler = null;
+    }
+    const ctx = this.getAudioContext();
+    if (ctx && this.bgmContextStateHandler) {
+      ctx.removeEventListener('statechange', this.bgmContextStateHandler);
+      this.bgmContextStateHandler = null;
+    }
     if (this.bgmPulseTimer) {
       this.bgmPulseTimer.remove(false);
       this.bgmPulseTimer = null;
@@ -346,7 +410,6 @@ export class AudioSystem {
       this.bgmMelodyTimer.remove(false);
       this.bgmMelodyTimer = null;
     }
-    const ctx = this.getAudioContext();
     if (this.bgmMasterGain && ctx) {
       const now = ctx.currentTime;
       this.bgmMasterGain.gain.cancelScheduledValues(now);

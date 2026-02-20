@@ -26,6 +26,7 @@ type RunnerSceneApi = Phaser.Scene & {
 };
 
 const appEl = document.getElementById('app') as HTMLElement | null;
+const gamePaneEl = document.getElementById('game-pane') as HTMLElement | null;
 
 const config: Phaser.Types.Core.GameConfig = {
   type: Phaser.AUTO,
@@ -66,6 +67,8 @@ const rainBtnEl = document.getElementById('btn-rain') as HTMLButtonElement | nul
 let lastLayoutMode = '';
 let lastResizeWidth = -1;
 let lastResizeHeight = -1;
+let resizeRafId1 = 0;
+let resizeRafId2 = 0;
 
 function getRunnerScene(): RunnerSceneApi | null {
   const scene = game.scene.getScene('RunningMainScene');
@@ -140,11 +143,16 @@ function renderHudState(state: RunnerUiState | null | undefined): void {
 }
 
 function resizeGameToPane(): void {
-  if (!appEl || !game?.scale) {
+  if (!game?.scale) {
     return;
   }
-  const width = Math.max(1, appEl.clientWidth);
-  const height = Math.max(1, appEl.clientHeight);
+  const targetEl = gamePaneEl || appEl;
+  if (!targetEl) {
+    return;
+  }
+  const rect = targetEl.getBoundingClientRect();
+  const width = Math.max(1, Math.round(rect.width));
+  const height = Math.max(1, Math.round(rect.height));
   if (width === lastResizeWidth && height === lastResizeHeight) {
     return;
   }
@@ -155,50 +163,70 @@ function resizeGameToPane(): void {
 
 function forceLayoutResize(): void {
   syncLayoutMode();
+  if (resizeRafId1) {
+    window.cancelAnimationFrame(resizeRafId1);
+    resizeRafId1 = 0;
+  }
+  if (resizeRafId2) {
+    window.cancelAnimationFrame(resizeRafId2);
+    resizeRafId2 = 0;
+  }
   resizeGameToPane();
-  window.requestAnimationFrame(() => {
+  resizeRafId1 = window.requestAnimationFrame(() => {
     resizeGameToPane();
-    window.requestAnimationFrame(() => {
+    resizeRafId2 = window.requestAnimationFrame(() => {
       resizeGameToPane();
+      resizeRafId2 = 0;
     });
+    resizeRafId1 = 0;
   });
 }
 
-function syncLayoutMode(): void {
+function syncLayoutMode(): boolean {
   const isRunnerActive = game.scene.isActive('RunningMainScene');
   const mode = isRunnerActive ? 'mode-runner' : 'mode-select';
   if (mode === lastLayoutMode) {
-    return;
+    return false;
   }
   lastLayoutMode = mode;
   document.body.classList.remove('mode-runner', 'mode-select');
   document.body.classList.add(mode);
-  window.requestAnimationFrame(() => {
-    resizeGameToPane();
-  });
+  return true;
 }
 
-window.addEventListener('resize', resizeGameToPane);
-resizeGameToPane();
+window.addEventListener('resize', () => {
+  forceLayoutResize();
+});
 syncLayoutMode();
+forceLayoutResize();
+window.addEventListener('load', () => {
+  forceLayoutResize();
+});
 if (sceneManager.events) {
   sceneManager.events.on('start', forceLayoutResize);
   sceneManager.events.on('wake', forceLayoutResize);
+  sceneManager.events.on('sleep', forceLayoutResize);
+  sceneManager.events.on('shutdown', forceLayoutResize);
 }
-if (typeof ResizeObserver !== 'undefined' && appEl) {
+if (typeof ResizeObserver !== 'undefined' && (gamePaneEl || appEl)) {
   appResizeObserver = new ResizeObserver(() => {
-    resizeGameToPane();
+    forceLayoutResize();
   });
-  appResizeObserver.observe(appEl);
+  if (gamePaneEl) {
+    appResizeObserver.observe(gamePaneEl);
+  }
+  if (appEl) {
+    appResizeObserver.observe(appEl);
+  }
 }
 
 window.addEventListener('runner-ui-state', (event: Event) => {
+  forceLayoutResize();
   const customEvent = event as CustomEvent<RunnerUiState>;
   renderHudState(customEvent.detail);
 });
 
 window.setInterval(() => {
-  syncLayoutMode();
   const scene = getRunnerScene();
   if (!scene || typeof scene.getExternalUiState !== 'function') {
     return;
@@ -286,9 +314,19 @@ document.addEventListener('visibilitychange', () => {
 });
 
 window.addEventListener('beforeunload', () => {
+  if (resizeRafId1) {
+    window.cancelAnimationFrame(resizeRafId1);
+    resizeRafId1 = 0;
+  }
+  if (resizeRafId2) {
+    window.cancelAnimationFrame(resizeRafId2);
+    resizeRafId2 = 0;
+  }
   if (sceneManager.events) {
     sceneManager.events.off('start', forceLayoutResize);
     sceneManager.events.off('wake', forceLayoutResize);
+    sceneManager.events.off('sleep', forceLayoutResize);
+    sceneManager.events.off('shutdown', forceLayoutResize);
   }
   if (appResizeObserver) {
     appResizeObserver.disconnect();
